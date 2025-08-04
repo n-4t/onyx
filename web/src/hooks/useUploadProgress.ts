@@ -4,7 +4,7 @@ export interface UploadProgressState {
   isUploading: boolean;
   progress: number;
   stage: 'uploading' | 'processing' | 'indexing' | 'complete' | 'error';
-  fileName?: string;
+  fileName: string;
   error?: string;
 }
 
@@ -16,14 +16,24 @@ export const useUploadProgress = () => {
   const [uploadProgress, setUploadProgress] = useState<FileUploadProgress>({});
 
   const updateProgress = useCallback((fileName: string, update: Partial<UploadProgressState>) => {
-    setUploadProgress(prev => ({
-      ...prev,
-      [fileName]: {
-        ...prev[fileName],
-        ...update,
-        fileName
-      }
-    }));
+    setUploadProgress(prev => {
+      const currentState = prev[fileName] || {
+        isUploading: false,
+        progress: 0,
+        stage: 'uploading' as const,
+        fileName,
+        error: undefined
+      };
+      
+      return {
+        ...prev,
+        [fileName]: {
+          ...currentState,
+          ...update,
+          fileName // Ensure fileName is always set
+        }
+      };
+    });
   }, []);
 
   const startUpload = useCallback((fileName: string) => {
@@ -31,12 +41,17 @@ export const useUploadProgress = () => {
       isUploading: true,
       progress: 0,
       stage: 'uploading',
+      fileName,
       error: undefined
     });
   }, [updateProgress]);
 
-  const setUploadProgress = useCallback((fileName: string, progress: number) => {
-    updateProgress(fileName, { progress, stage: 'uploading' });
+  const setFileProgress = useCallback((fileName: string, progress: number) => {
+    updateProgress(fileName, { 
+      progress, 
+      stage: 'uploading',
+      fileName 
+    });
   }, [updateProgress]);
 
   const setProcessingStage = useCallback((fileName: string, stage: UploadProgressState['stage']) => {
@@ -51,7 +66,8 @@ export const useUploadProgress = () => {
     updateProgress(fileName, { 
       stage, 
       progress: progressMap[stage],
-      isUploading: stage !== 'complete' && stage !== 'error'
+      isUploading: stage !== 'complete' && stage !== 'error',
+      fileName
     });
   }, [updateProgress]);
 
@@ -60,6 +76,7 @@ export const useUploadProgress = () => {
       isUploading: false,
       progress: 0,
       stage: 'error',
+      fileName,
       error
     });
   }, [updateProgress]);
@@ -69,6 +86,7 @@ export const useUploadProgress = () => {
       isUploading: false,
       progress: 100,
       stage: 'complete',
+      fileName,
       error: undefined
     });
     
@@ -91,7 +109,7 @@ export const useUploadProgress = () => {
   return {
     uploadProgress,
     startUpload,
-    setUploadProgress,
+    setFileProgress,
     setProcessingStage,
     setError,
     completeUpload,
