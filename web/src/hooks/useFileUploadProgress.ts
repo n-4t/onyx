@@ -20,52 +20,56 @@ export function useFileUploadProgress(fileIds: number[]) {
   const [isPolling, setIsPolling] = useState(false);
   const [isComplete, setIsComplete] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  
+
   useEffect(() => {
     if (!fileIds.length) return;
-    
+
     setIsPolling(true);
     setIsComplete(false);
     setError(null);
-    
+
     const pollProgress = async () => {
+      console.log('[useFileUploadProgress] Polling for file progress:', fileIds);
       try {
         const queryParams = fileIds.map(id => `file_ids=${id}`).join('&');
         const response = await fetch(`/api/user/file/upload-progress?${queryParams}`);
-        
+
+        console.log('[useFileUploadProgress] API response status:', response.status);
         if (!response.ok) {
           throw new Error(`Failed to fetch file progress: ${response.statusText}`);
         }
-        
+
         const data = await response.json();
+        console.log('[useFileUploadProgress] Progress data received:', data);
         setProgress(data);
-        
+
         // Check if all files are indexed
-        const allDone = Object.values(data).every((fileProgress: any) => 
+        const allDone = Object.values(data).every((fileProgress: any) =>
           fileProgress.indexed || fileProgress.status === 'SUCCESS'
         );
-        
+
         if (allDone) {
           setIsPolling(false);
           setIsComplete(true);
+          console.log('[useFileUploadProgress] All files indexed, stopping polling');
         }
       } catch (error) {
-        console.error('Error fetching file progress:', error);
+        console.error('[useFileUploadProgress] Error fetching file progress:', error);
         setError(error instanceof Error ? error.message : 'Unknown error');
       }
     };
-    
-    // Initial poll
+
     pollProgress();
-    
-    // Set up polling interval - poll every 3 seconds
+
     const intervalId = setInterval(pollProgress, 3000);
-    
+
     return () => {
       clearInterval(intervalId);
       setIsPolling(false);
     };
   }, [fileIds]);
-  
+
+  console.log('[useFileUploadProgress] Current progress state:', progress, 'isPolling:', isPolling, 'isComplete:', isComplete, 'error:', error);
+
   return { progress, isPolling, isComplete, error };
 }

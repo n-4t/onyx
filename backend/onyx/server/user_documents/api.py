@@ -703,3 +703,4 @@ def get_file_upload_progress(
 
     logger.info(f"Returning progress response: {status_dict}")
     return status_dict
+
