@@ -610,64 +610,63 @@ def bulk_cleanup_files(
 
 
 ################################################################################################################ added below #############
+from onyx.utils.logger import setup_logger
+logger = setup_logger()
+
 @router.get("/user/file/upload-progress")
 def get_file_upload_progress(
     file_ids: List[int] = Query(...),
     user: User = Depends(current_user),
     db_session: Session = Depends(get_session),
 ) -> Dict[int, Dict[str, Any]]:
-    """Get detailed upload and indexing progress for files"""
-    import logging
-    logger = logging.getLogger(__name__)
-    logger.info(f"[upload-progress] file_ids: {file_ids}, user: {user.id}")
+    logger.info(f"Upload progress API called for user {user.id} with file_ids {file_ids}")
     status_dict = {}
-    
-    # Query UserFile with cc_pair join
+
     files_with_pairs = (
         db_session.query(UserFile)
         .filter(UserFile.id.in_(file_ids))
         .options(joinedload(UserFile.cc_pair))
         .all()
     )
-    logger.info(f"[upload-progress] files found: {[file.id for file in files_with_pairs]}")
-    
+
+    logger.debug(f"Queried UserFile objects: {[f.id for f in files_with_pairs]}")
+
     for file in files_with_pairs:
-        logger.info(f"[upload-progress] processing file: {file.id} {file.name}")
+        logger.debug(f"Processing file {file.id} ({file.name}), has_cc_pair={bool(file.cc_pair)}")
         if file.cc_pair:
-            # Check for the most recent index attempt
             latest_attempt = (
                 db_session.query(IndexAttempt)
                 .filter(IndexAttempt.connector_credential_pair_id == file.cc_pair.id)
                 .order_by(IndexAttempt.time_created.desc())
                 .first()
             )
-            
+
+            logger.debug(f"Latest index attempt for file {file.id}: {latest_attempt.id if latest_attempt else None}")
+
             if latest_attempt:
-                # Get coordination status to track progress
                 coordination_status = IndexingCoordination.get_coordination_status(
                     db_session, latest_attempt.id
                 )
-                
-                # Get processing logs for OCR info if available
+                logger.debug(f"Coordination status for attempt {latest_attempt.id}: {coordination_status.__dict__}")
+
                 processing_logs = get_processing_logs(latest_attempt.id, db_session)
+                logger.debug(f"Processing logs (len={len(processing_logs)}): {processing_logs[:5]}")
+
                 ocr_info = extract_ocr_info_from_logs(processing_logs)
-                
-                # Calculate progress percentage based on completed batches or OCR pages
+                logger.debug(f"OCR info for file {file.id}: {ocr_info}")
+
                 progress_percentage = calculate_progress_percentage(coordination_status)
                 if ocr_info["is_ocr"] and ocr_info["current_page"] and ocr_info["total_pages"]:
-                    # For OCR files, calculate progress based on current page
                     ocr_progress = (ocr_info["current_page"] / ocr_info["total_pages"]) * 100
                     progress_percentage = min(99, int(ocr_progress))
-                
-                # Calculate estimated time remaining
+
                 estimated_time = estimate_completion_time(latest_attempt, coordination_status)
                 if ocr_info["is_ocr"] and ocr_info["avg_time_per_page"] and ocr_info["current_page"] and ocr_info["total_pages"]:
-                    # For OCR files, estimate based on average page processing time
                     pages_remaining = ocr_info["total_pages"] - ocr_info["current_page"]
                     seconds_remaining = pages_remaining * ocr_info["avg_time_per_page"]
                     now = datetime.now(datetime.timezone.utc)
                     estimated_time = now + timedelta(seconds=seconds_remaining)
-                
+
                 status = {
                     "indexed": file.cc_pair.last_successful_index_time is not None,
                     "status": latest_attempt.status,
@@ -682,6 +681,7 @@ def get_file_upload_progress(
                     "ocr_avg_page_time": ocr_info["avg_time_per_page"],
                     "file_name": file.name,
                 }
+                logger.info(f"Progress status for file {file.id}: {status}")
             else:
                 status = {
                     "indexed": False, 
@@ -689,6 +689,7 @@ def get_file_upload_progress(
                     "progress_percentage": 0,
                     "file_name": file.name,
                 }
+                logger.info(f"No index attempt for file {file.id}, status: {status}")
         else:
             status = {
                 "indexed": False, 
@@ -696,9 +697,9 @@ def get_file_upload_progress(
                 "progress_percentage": 0,
                 "file_name": file.name,
             }
+            logger.info(f"No cc_pair for file {file.id}, status: {status}")
         
         status_dict[file.id] = status
-        logger.info(f"[upload-progress] status for {file.id}: {status}")
-            
-    logger.info(f"[upload-progress] returning status_dict: {status_dict}")
+
+    logger.info(f"Returning progress response: {status_dict}")
     return status_dict
