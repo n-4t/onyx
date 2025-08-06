@@ -22,7 +22,12 @@ export function useFileUploadProgress(fileIds: number[]) {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!fileIds.length) return;
+    console.log('[useFileUploadProgress] Effect triggered with fileIds:', fileIds);
+    
+    if (!fileIds.length) {
+      console.log('[useFileUploadProgress] No fileIds, exiting');
+      return;
+    }
 
     setIsPolling(true);
     setIsComplete(false);
@@ -30,13 +35,20 @@ export function useFileUploadProgress(fileIds: number[]) {
 
     const pollProgress = async () => {
       console.log('[useFileUploadProgress] Polling for file progress:', fileIds);
+      
       try {
         const queryParams = fileIds.map(id => `file_ids=${id}`).join('&');
-        const response = await fetch(`/api/user/file/upload-progress?${queryParams}`);
-
+        const url = `/api/user/file/upload-progress?${queryParams}`;
+        console.log('[useFileUploadProgress] Fetching URL:', url);
+        
+        const response = await fetch(url);
         console.log('[useFileUploadProgress] API response status:', response.status);
+        console.log('[useFileUploadProgress] API response headers:', Object.fromEntries(response.headers.entries()));
+
         if (!response.ok) {
-          throw new Error(`Failed to fetch file progress: ${response.statusText}`);
+          const errorText = await response.text();
+          console.error('[useFileUploadProgress] API error response:', errorText);
+          throw new Error(`Failed to fetch file progress: ${response.status} ${response.statusText} - ${errorText}`);
         }
 
         const data = await response.json();
@@ -48,6 +60,8 @@ export function useFileUploadProgress(fileIds: number[]) {
           fileProgress.indexed || fileProgress.status === 'SUCCESS'
         );
 
+        console.log('[useFileUploadProgress] All done check:', allDone);
+
         if (allDone) {
           setIsPolling(false);
           setIsComplete(true);
@@ -56,20 +70,31 @@ export function useFileUploadProgress(fileIds: number[]) {
       } catch (error) {
         console.error('[useFileUploadProgress] Error fetching file progress:', error);
         setError(error instanceof Error ? error.message : 'Unknown error');
+        setIsPolling(false); // Stop polling on error
       }
     };
 
+    // Initial poll
     pollProgress();
 
+    // Set up interval
+    console.log('[useFileUploadProgress] Setting up 3-second polling interval');
     const intervalId = setInterval(pollProgress, 3000);
 
     return () => {
+      console.log('[useFileUploadProgress] Cleanup: clearing interval');
       clearInterval(intervalId);
       setIsPolling(false);
     };
   }, [fileIds]);
 
-  console.log('[useFileUploadProgress] Current progress state:', progress, 'isPolling:', isPolling, 'isComplete:', isComplete, 'error:', error);
+  console.log('[useFileUploadProgress] Hook state:', { 
+    progress, 
+    isPolling, 
+    isComplete, 
+    error,
+    fileIds 
+  });
 
   return { progress, isPolling, isComplete, error };
 }
