@@ -617,6 +617,9 @@ def get_file_upload_progress(
     db_session: Session = Depends(get_session),
 ) -> Dict[int, Dict[str, Any]]:
     """Get detailed upload and indexing progress for files"""
+    import logging
+    logger = logging.getLogger(__name__)
+    logger.info(f"[upload-progress] file_ids: {file_ids}, user: {user.id}")
     status_dict = {}
     
     # Query UserFile with cc_pair join
@@ -626,8 +629,10 @@ def get_file_upload_progress(
         .options(joinedload(UserFile.cc_pair))
         .all()
     )
+    logger.info(f"[upload-progress] files found: {[file.id for file in files_with_pairs]}")
     
     for file in files_with_pairs:
+        logger.info(f"[upload-progress] processing file: {file.id} {file.name}")
         if file.cc_pair:
             # Check for the most recent index attempt
             latest_attempt = (
@@ -693,5 +698,7 @@ def get_file_upload_progress(
             }
         
         status_dict[file.id] = status
-    
+        logger.info(f"[upload-progress] status for {file.id}: {status}")
+            
+    logger.info(f"[upload-progress] returning status_dict: {status_dict}")
     return status_dict
