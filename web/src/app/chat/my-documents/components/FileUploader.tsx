@@ -15,6 +15,7 @@ export function FileUploader({ folderId, onFilesUploaded }: FileUploaderProps) {
   const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
     if (!event.target.files?.length) return;
     
+    console.log('[FileUploader] Starting upload...');
     setIsUploading(true);
     setUploadError(null);
     
@@ -38,7 +39,10 @@ export function FileUploader({ folderId, onFilesUploaded }: FileUploaderProps) {
       }
       
       const data = await response.json();
+      console.log('[FileUploader] Upload response:', data);
+      
       const fileIds = data.map((file: any) => file.id);
+      console.log('[FileUploader] Setting uploadedFileIds:', fileIds);
       setUploadedFileIds(fileIds);
       
       // Notify parent component if callback is provided
@@ -54,9 +58,15 @@ export function FileUploader({ folderId, onFilesUploaded }: FileUploaderProps) {
   };
   
   const handleUploadComplete = () => {
-    // Reset the upload state after files are ready
+    console.log('[FileUploader] Upload complete, resetting fileIds');
     setUploadedFileIds([]);
   };
+  
+  console.log('[FileUploader] Current state:', {
+    isUploading,
+    uploadedFileIds,
+    uploadError
+  });
   
   return (
     <div className="space-y-4">
@@ -83,6 +93,11 @@ export function FileUploader({ folderId, onFilesUploaded }: FileUploaderProps) {
       {uploadError && (
         <div className="text-red-500 text-sm">{uploadError}</div>
       )}
+      
+      {/* DEBUG: Show the state */}
+      <div className="text-xs text-gray-500">
+        DEBUG: uploadedFileIds = {JSON.stringify(uploadedFileIds)}
+      </div>
       
       {uploadedFileIds.length > 0 && (
         <FileUploadProgress 
