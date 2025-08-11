@@ -1,3 +1,4 @@
+import io
 import json
 import mimetypes
 import os
@@ -101,8 +102,9 @@ from onyx.db.models import IndexAttempt
 from onyx.db.models import IndexingStatus
 from onyx.db.models import User
 from onyx.db.models import UserGroup__ConnectorCredentialPair
-from onyx.file_processing.extract_file_text import convert_docx_to_txt
+from onyx.file_processing.extract_file_text import extract_file_text
 from onyx.file_store.file_store import get_default_file_store
+from onyx.file_store.models import ChatFileType
 from onyx.key_value_store.interface import KvKeyNotFoundError
 from onyx.server.documents.models import AuthStatus
 from onyx.server.documents.models import AuthUrl
@@ -124,6 +126,7 @@ from onyx.server.documents.models import IndexAttemptSnapshot
 from onyx.server.documents.models import ObjectCreationIdResponse
 from onyx.server.documents.models import RunConnectorRequest
 from onyx.server.models import StatusResponse
+from onyx.server.query_and_chat.chat_utils import mime_type_to_chat_file_type
 from onyx.utils.logger import setup_logger
 from onyx.utils.telemetry import create_milestone_and_report
 from onyx.utils.threadpool_concurrency import run_functions_tuples_in_parallel
@@ -438,7 +441,9 @@ def is_zip_file(file: UploadFile) -> bool:
     )
 
 
-def upload_files(files: list[UploadFile]) -> FileUploadResponse:
+def upload_files(
+    files: list[UploadFile], file_origin: FileOrigin = FileOrigin.CONNECTOR
+) -> FileUploadResponse:
     for file in files:
         if not file.filename:
             raise HTTPException(status_code=400, detail="File name cannot be empty")
@@ -449,6 +454,7 @@ def upload_files(files: list[UploadFile]) -> FileUploadResponse:
         return not any(part.startswith(".") for part in normalized_path.split(os.sep))
 
     deduped_file_paths = []
+    deduped_file_names = []
     zip_metadata = {}
     try:
         file_store = get_default_file_store()
@@ -480,14 +486,24 @@ def upload_files(files: list[UploadFile]) -> FileUploadResponse:
                             file_type=mime_type,
                         )
                         deduped_file_paths.append(file_id)
+                        deduped_file_names.append(os.path.basename(file_info))
                 continue
 
-            # Special handling for docx files - only store the plaintext version
-            if file.content_type and file.content_type.startswith(
-                "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-            ):
-                docx_file_id = convert_docx_to_txt(file, file_store)
-                deduped_file_paths.append(docx_file_id)
+            # For mypy, actual check happens at start of function
+            assert file.filename is not None
+
+            # Special handling for doc files - only store the plaintext version
+            file_type = mime_type_to_chat_file_type(file.content_type)
+            if file_type == ChatFileType.DOC:
+                extracted_text = extract_file_text(file.file, file.filename or "")
+                text_file_id = file_store.save_file(
+                    content=io.BytesIO(extracted_text.encode()),
+                    display_name=file.filename,
+                    file_origin=file_origin,
+                    file_type="text/plain",
+                )
+                deduped_file_paths.append(text_file_id)
+                deduped_file_names.append(file.filename)
                 continue
 
             # Default handling for all other file types
@@ -498,10 +514,15 @@ def upload_files(files: list[UploadFile]) -> FileUploadResponse:
                 file_type=file.content_type or "text/plain",
             )
             deduped_file_paths.append(file_id)
+            deduped_file_names.append(file.filename)
 
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    return FileUploadResponse(file_paths=deduped_file_paths, zip_metadata=zip_metadata)
+    return FileUploadResponse(
+        file_paths=deduped_file_paths,
+        file_names=deduped_file_names,
+        zip_metadata=zip_metadata,
+    )
 
 
 @router.post("/admin/connector/file/upload")
@@ -509,7 +530,7 @@ def upload_files_api(
     files: list[UploadFile],
     _: User = Depends(current_curator_or_admin_user),
 ) -> FileUploadResponse:
-    return upload_files(files)
+    return upload_files(files, FileOrigin.OTHER)
 
 
 @router.get("/admin/connector")

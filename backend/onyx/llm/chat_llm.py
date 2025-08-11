@@ -313,13 +313,13 @@ class DefaultMultiLLM(LLM):
 
         self._model_kwargs = model_kwargs
 
-    def log_model_configs(self) -> None:
-        logger.debug(f"Config: {self.config}")
-
     def _safe_model_config(self) -> dict:
         dump = self.config.model_dump()
         dump["api_key"] = mask_string(dump.get("api_key", ""))
         return dump
+
+    def log_model_configs(self) -> None:
+        logger.debug(f"Config: {self._safe_model_config()}")
 
     def _record_call(self, prompt: LanguageModelInput) -> None:
         if self._long_term_logger:
@@ -397,8 +397,17 @@ class DefaultMultiLLM(LLM):
                 # streaming choice
                 stream=stream,
                 # model params
-                temperature=self._temperature,
+#<<<<<<< HEAD
+ #               temperature=self._temperature,
                 timeout=120, #timeout_override or self._timeout,
+#=======
+                temperature=(
+                    1
+                    if self.config.model_name in ["gpt-5", "gpt-5-mini", "gpt-5-nano"]
+                    else self._temperature
+                ),
+#                timeout=timeout_override or self._timeout,
+#>>>>>>> upstream/main
                 # For now, we don't support parallel tool calls
                 # NOTE: we can't pass this in if tools are not specified
                 # or else OpenAI throws an error
