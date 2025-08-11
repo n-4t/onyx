@@ -823,7 +823,7 @@ def upload_files_for_chat(
         )
         user_file.cc_pair_id = cc_pair.data
         db_session.commit()
->>>>>>> upstream/main
+#>>>>>>> upstream/main
 
     return {
         "files": [

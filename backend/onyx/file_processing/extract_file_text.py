@@ -17,11 +17,11 @@ from typing import NamedTuple
 from zipfile import BadZipFile
 
 import chardet
+import docx  # type: ignore
+import openpyxl  # type: ignore
+import pptx  # type: ignore
 from docx import Document as DocxDocument
 from fastapi import UploadFile
-from markitdown import FileConversionException
-from markitdown import MarkItDown
-from markitdown import UnsupportedFormatException
 from PIL import Image
 from pypdf import PdfReader
 from pypdf.errors import PdfStreamError
@@ -36,6 +36,9 @@ from onyx.file_store.file_store import FileStore
 from onyx.utils.logger import setup_logger
 
 from onyx.file_processing.ollama_ocr import is_ollama_ocr_available, get_ollama_ocr        # import from new OCR file
+
+import tempfile
+from onyx.file_processing.unstructured_client import process_file_with_unstructured
 
 logger = setup_logger()
 
@@ -146,13 +149,6 @@ def is_macos_resource_fork_file(file_name: str) -> bool:
     )
 
 
-def to_bytesio(stream: IO[bytes]) -> BytesIO:
-    if isinstance(stream, BytesIO):
-        return stream
-    data = stream.read()  # consumes the stream!
-    return BytesIO(data)
-
-
 def load_files_from_zip(
     zip_file_io: IO,
     ignore_macos_resource_fork_files: bool = True,
@@ -246,18 +242,21 @@ def read_text_file(
 #     return text
 
 # revised function to wokr with ollama OCR
-def pdf_to_text(file: IO[Any], pdf_pass: str | None = None) -> str:                            #########################3 all below
+def pdf_to_text(file: IO[Any], pdf_pass: str | None = None) -> str:
     """
-    Extract text from a PDF with Ollama OCR fallback for image-based content.
+    Extract text from a PDF:
+      1) Try standard text extraction
+      2) If it looks image-based, try Unstructured (local API, no key)
+      3) If Unstructured fails/empty, fall back to Ollama OCR
     """
-    logger.info("=== PDF EXTRACTION WITH OLLAMA OCR ===")
-    
+    logger.info("=== PDF EXTRACTION (standard -> Unstructured -> OCR) ===")
+
     try:
         # First try standard extraction
         file.seek(0)
         pdf_reader = PdfReader(file)
         logger.info(f"PDF has {len(pdf_reader.pages)} pages")
-        
+
         if pdf_reader.is_encrypted:
             if pdf_pass is not None:
                 decrypt_success = False
@@ -270,52 +269,81 @@ def pdf_to_text(file: IO[Any], pdf_pass: str | None = None) -> str:             
             else:
                 logger.warning("No password for encrypted PDF")
                 return ""
-        
-        # Try normal text extraction
+
+        # Normal text extraction
         text_parts = []
         total_normal_text = 0
-        
         for page in pdf_reader.pages:
-            page_text = page.extract_text().strip()
+            page_text = (page.extract_text() or "").strip()
             text_parts.append(page_text)
             total_normal_text += len(page_text)
-        
+
         # Check if we got meaningful text (not just bullets and spaces)
         meaningful_text = ''.join(text_parts).replace('•', '').replace('\n', '').replace(' ', '')
         logger.info(f"Normal extraction: {total_normal_text} chars, meaningful: {len(meaningful_text)} chars")
-        
-        # If very little meaningful text, use Ollama OCR
-# <<<<<<< n-4t
-#         if len(meaningful_text) < 100:
-# =======
+
+        # If very little meaningful text, try Unstructured first
         if len(meaningful_text) < 500:
-# >>>>>>> main
-            logger.info("PDF appears to be image-based, checking Ollama OCR availability...")
-            
+            logger.info("PDF appears image-based. Trying Unstructured (local API) ...")
+
+            try:
+                # Unstructured API needs a file path -> write a temp file
+                file.seek(0)
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+                    tmp.write(file.read())
+                    tmp_path = tmp.name
+
+                elements = process_file_with_unstructured(
+                    tmp_path,
+                    strategy="auto",
+                    languages=["eng"],
+                    coordinates=False,
+                )
+
+                # Reassemble text from elements
+                el_texts = []
+                for el in elements or []:
+                    t = (el.get("text") or "").strip()
+                    if t:
+                        el_texts.append(t)
+                unstructured_text = TEXT_SECTION_SEPARATOR.join(el_texts).strip()
+
+                try:
+                    os.unlink(tmp_path)
+                except Exception:
+                    pass
+
+                if len(unstructured_text) > len(meaningful_text):
+                    logger.info(f"Unstructured succeeded: {len(unstructured_text)} characters")
+                    return unstructured_text
+                else:
+                    logger.info("Unstructured returned little/no text. Trying OCR fallback ...")
+            except Exception as e:
+                logger.warning(f"Unstructured failed ({e}). Trying OCR fallback ...")
+
+            # OCR fallback via Ollama
+            logger.info("Checking Ollama OCR availability...")
             if is_ollama_ocr_available():
-                logger.info("Using Ollama OCR for image-based PDF...")
                 ollama_ocr = get_ollama_ocr()
                 if ollama_ocr:
                     file.seek(0)  # Reset file pointer
-                    ollama_result = ollama_ocr.extract_text_from_pdf(file)
-                    if len(ollama_result.strip()) > len(meaningful_text):
-                        logger.info(f"Ollama OCR successful: {len(ollama_result)} characters")
-                        return ollama_result
+                    ocr_text = ollama_ocr.extract_text_from_pdf(file)
+                    if len(ocr_text.strip()) > len(meaningful_text):
+                        logger.info(f"OCR successful: {len(ocr_text)} characters")
+                        return ocr_text
                     else:
-                        logger.info("Ollama OCR didn't improve results")
+                        logger.info("OCR didn't improve results")
             else:
-                logger.warning("Ollama OCR not available, using normal extraction")
-        else:
-            logger.info("PDF has sufficient normal text, using standard extraction")
-        
+                logger.warning("Ollama OCR not available; falling back to standard extraction")
+
         # Fallback to normal extraction
         result = TEXT_SECTION_SEPARATOR.join(text_parts)
         logger.info(f"Using normal extraction: {len(result)} characters")
         return result
-        
+
     except Exception as e:
         logger.error(f"PDF extraction failed: {e}")
-        return ""                                                                    ############################################## all above
+        return ""
 
 
 def read_pdf_file(
@@ -386,43 +414,19 @@ def read_pdf_file(
     return "", metadata, []
 
 
-def extract_docx_images(docx_bytes: IO[Any]) -> list[tuple[bytes, str]]:
-    """
-    Given the bytes of a docx file, extract all the images.
-    Returns a list of tuples (image_bytes, image_name).
-    """
-    out = []
-    try:
-        with zipfile.ZipFile(docx_bytes) as z:
-            for name in z.namelist():
-                if name.startswith("word/media/"):
-                    out.append((z.read(name), name.split("/")[-1]))
-    except Exception:
-        logger.exception("Failed to extract all docx images")
-    return out
-
-
 def docx_to_text_and_images(
     file: IO[Any], file_name: str = ""
 ) -> tuple[str, Sequence[tuple[bytes, str]]]:
     """
-    Extract text from a docx.
+    Extract text from a docx. If embed_images=True, also extract inline images.
     Return (text_content, list_of_images).
     """
-    md = MarkItDown(enable_plugins=False)
+    paragraphs = []
+    embedded_images: list[tuple[bytes, str]] = []
+
     try:
-#<<<<<<< HEAD
- #       doc = docx.Document(file)
- #   except BadZipFile as e:
-#=======
-        doc = md.convert(to_bytesio(file))
-    except (
-        BadZipFile,
-        ValueError,
-        FileConversionException,
-        UnsupportedFormatException,
-    ) as e:
-#>>>>>>> upstream/main
+        doc = docx.Document(file)
+    except BadZipFile as e:
         logger.warning(
             f"Failed to extract docx {file_name or 'docx file'}: {e}. Attempting to read as text file."
         )
@@ -435,7 +439,6 @@ def docx_to_text_and_images(
         )
         return text_content_raw or "", []
 
-#<<<<<<< HEAD
     # Grab text from paragraphs
     for paragraph in doc.paragraphs:
         paragraphs.append(paragraph.text)
@@ -455,45 +458,35 @@ def docx_to_text_and_images(
 
     text_content = "\n".join(paragraphs)
     return text_content, embedded_images
-#=======
- #   file.seek(0)
-  #  return doc.markdown, extract_docx_images(to_bytesio(file))
-#>>>>>>> upstream/main
 
 
 def pptx_to_text(file: IO[Any], file_name: str = "") -> str:
-    md = MarkItDown(enable_plugins=False)
     try:
-        presentation = md.convert(to_bytesio(file))
-    except (
-        BadZipFile,
-        ValueError,
-        FileConversionException,
-        UnsupportedFormatException,
-    ) as e:
+        presentation = pptx.Presentation(file)
+    except BadZipFile as e:
         error_str = f"Failed to extract text from {file_name or 'pptx file'}: {e}"
         logger.warning(error_str)
         return ""
-    return presentation.markdown
+    text_content = []
+    for slide_number, slide in enumerate(presentation.slides, start=1):
+        slide_text = f"\nSlide {slide_number}:\n"
+        for shape in slide.shapes:
+            if hasattr(shape, "text"):
+                slide_text += shape.text + "\n"
+        text_content.append(slide_text)
+    return TEXT_SECTION_SEPARATOR.join(text_content)
 
 
 def xlsx_to_text(file: IO[Any], file_name: str = "") -> str:
-    md = MarkItDown(enable_plugins=False)
     try:
-        workbook = md.convert(to_bytesio(file))
-    except (
-        BadZipFile,
-        ValueError,
-        FileConversionException,
-        UnsupportedFormatException,
-    ) as e:
+        workbook = openpyxl.load_workbook(file, read_only=True)
+    except BadZipFile as e:
         error_str = f"Failed to extract text from {file_name or 'xlsx file'}: {e}"
         if file_name.startswith("~"):
             logger.debug(error_str + " (this is expected for files with ~)")
         else:
             logger.warning(error_str)
         return ""
-#<<<<<<< HEAD
     except Exception as e:
         if "File contains no valid workbook part" in str(e):
             logger.error(
@@ -501,10 +494,31 @@ def xlsx_to_text(file: IO[Any], file_name: str = "") -> str:
             )
             return ""
         raise e
-#=======
-#>>>>>>> upstream/main
 
-    return workbook.markdown
+    text_content = []
+    for sheet in workbook.worksheets:
+        rows = []
+        num_empty_consecutive_rows = 0
+        for row in sheet.iter_rows(min_row=1, values_only=True):
+            row_str = ",".join(str(cell or "") for cell in row)
+
+            # Only add the row if there are any values in the cells
+            if len(row_str) >= len(row):
+                rows.append(row_str)
+                num_empty_consecutive_rows = 0
+            else:
+                num_empty_consecutive_rows += 1
+
+            if num_empty_consecutive_rows > 100:
+                # handle massive excel sheets with mostly empty cells
+                logger.warning(
+                    f"Found {num_empty_consecutive_rows} empty rows in {file_name},"
+                    " skipping rest of file"
+                )
+                break
+        sheet_str = "\n".join(rows)
+        text_content.append(sheet_str)
+    return TEXT_SECTION_SEPARATOR.join(text_content)
 
 
 def eml_to_text(file: IO[Any]) -> str:
@@ -557,9 +571,9 @@ def extract_file_text(
     """
     extension_to_function: dict[str, Callable[[IO[Any]], str]] = {
         ".pdf": pdf_to_text,
-        ".docx": lambda f: docx_to_text_and_images(f, file_name)[0],  # no images
-        ".pptx": lambda f: pptx_to_text(f, file_name),
-        ".xlsx": lambda f: xlsx_to_text(f, file_name),
+        ".docx": lambda f: docx_to_text_and_images(f)[0],  # no images
+        ".pptx": pptx_to_text,
+        ".xlsx": xlsx_to_text,
         ".eml": eml_to_text,
         ".epub": epub_to_text,
         ".html": parse_html_page_basic,
@@ -632,12 +646,8 @@ def extract_text_and_images(
 
         # docx example for embedded images
         if extension == ".docx":
-#<<<<<<< HEAD
             file.seek(0)
             text_content, images = docx_to_text_and_images(file)
-#=======
- #           text_content, images = docx_to_text_and_images(file, file_name)
-#>>>>>>> upstream/main
             return ExtractionResult(
                 text_content=text_content, embedded_images=images, metadata={}
             )
@@ -666,7 +676,7 @@ def extract_text_and_images(
             )
 
         if extension == ".xlsx":
-            file.seek(0)
+            file.seek(1)
             return ExtractionResult(
                 text_content=xlsx_to_text(file, file_name=file_name),
                 embedded_images=[],
@@ -739,3 +749,4 @@ def convert_docx_to_txt(file: UploadFile, file_store: FileStore) -> str:
 
 def docx_to_txt_filename(file_path: str) -> str:
     return file_path.rsplit(".", 1)[0] + ".txt"
+
