@@ -137,7 +137,7 @@ def decompose_orig_question(
 
     try:
         streamed_tokens = run_with_timeout(
-            300, #AGENT_TIMEOUT_LLM_SUBQUESTION_GENERATION, temp timeout testtttttttttttttttttttttttttttttttttttttttttttt
+            AGENT_TIMEOUT_LLM_SUBQUESTION_GENERATION,
             dispatch_separated,
             model.stream(
                 msg,
